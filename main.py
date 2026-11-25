@@ -7,7 +7,7 @@ from tempfile import mkdtemp
 import matplotlib.pyplot as plt
 import numpy as np
 
-CONFIG = {"learning_rate": 0.01, "batch_size": 256, "number_epochs": 300, "cd_steps": 20, "weight_initialization_scale": 0.01, "random_seed": 42, "generation_steps": 5000, "number_generated_samples": 16, "hidden_sizes": [512], "output_directory": "output", "class_names": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]}
+CONFIG = {"learning_rate": 0.01, "batch_size": 100, "number_epochs": 300, "cd_steps": 10, "weight_initialization_scale": 0.01, "random_seed": 42, "generation_steps": 5000, "number_generated_samples": 16, "hidden_sizes": [512], "output_directory": "output", "class_names": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]}
 
 # 784 pixel units (28x28 images), plus 10 one-hot label units.
 # 1 bias per visible unit, and hidden unit respectively
@@ -185,8 +185,12 @@ class RBM:
         # positive phase: calculate hidden probabilities for real data
         hidden_probabilities_data = self.hidden_probabilities(V_data)
 
-        # negative phase: run gibbs sampling starting from real data
-        model_visible_states = self.run_gibbs_chain(V_data, cd_steps)
+        # negative phase: initialize persistent chain
+        if self.gibbs_chain is None:
+            self.gibbs_chain = V_data.copy()
+        # continue from previous negative-phase state
+        self.gibbs_chain = self.run_gibbs_chain(self.gibbs_chain, cd_steps)
+        model_visible_states = self.gibbs_chain
         model_hidden_probabilities = self.hidden_probabilities(model_visible_states)
 
         data_free_energy = np.mean(self.free_energy(V_data))
@@ -194,9 +198,9 @@ class RBM:
         loss = data_free_energy - model_free_energy
 
         # calculate average visible to hidden associations
-        gradient_weights = (model_visible_states.T @ model_hidden_probabilities - V_data.T @ hidden_probabilities_data) / batch_size
-        gradient_visible_bias = np.mean(model_visible_states - V_data, axis=0)
-        gradient_hidden_bias = np.mean(model_hidden_probabilities - hidden_probabilities_data, axis=0)
+        gradient_weights = (model_visible_states.T @ model_hidden_probabilities) / len(model_visible_states) - (V_data.T @ hidden_probabilities_data) / batch_size
+        gradient_visible_bias = np.mean(model_visible_states, axis=0) - np.mean(V_data, axis=0)
+        gradient_hidden_bias = np.mean(model_hidden_probabilities, axis=0) - np.mean(hidden_probabilities_data, axis=0)
 
         # update parameters using gradients
         self.weights -= learning_rate * gradient_weights
