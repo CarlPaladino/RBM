@@ -7,7 +7,7 @@ from tempfile import mkdtemp
 import matplotlib.pyplot as plt
 import numpy as np
 
-CONFIG = {"learning_rate": 0.01, "batch_size": 100, "number_epochs": 300, "cd_steps": 10, "weight_initialization_scale": 0.01, "random_seed": 42, "generation_steps": 5000, "number_generated_samples": 16, "hidden_sizes": [512], "output_directory": "output", "class_names": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]}
+CONFIG = {"learning_rate": 0.02, "decay_rate": 0.9, "decay_frequency": 10, "batch_size": 100, "number_epochs": 300, "cd_steps": 10, "weight_initialization_scale": 0.01, "random_seed": 42, "generation_steps": 5000, "number_generated_samples": 16, "hidden_sizes": [512], "output_directory": "output", "class_names": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]}
 
 # 784 pixel units (28x28 images), plus 10 one-hot label units.
 # 1 bias per visible unit, and hidden unit respectively
@@ -305,13 +305,15 @@ def train(training_data, hidden_size, seed, config, checkpoint_directory=None, r
     if checkpoint_directory is None:
         checkpoint_directory = Path(config["output_directory"]) / f"hidden_{hidden_size}" / "checkpoints"
 
+    learning_rate = config["learning_rate"]
+
     for epoch in range(start_epoch, config["number_epochs"] + 1):
         weighted_loss_sum = 0.0
         observations_seen = 0
         next_progress = 10
 
         for batch in iterate_minibatches(training_data, config["batch_size"], rng):
-            metrics = model.train_batch(batch, config["learning_rate"], config["cd_steps"])
+            metrics = model.train_batch(batch, learning_rate, config["cd_steps"])
             weighted_loss_sum += metrics["loss"] * metrics["batch_size"]
             observations_seen += metrics["batch_size"]
             while next_progress <= 100 and observations_seen * 100 >= next_progress * len(training_data):
@@ -329,6 +331,9 @@ def train(training_data, hidden_size, seed, config, checkpoint_directory=None, r
             checkpoint_path = Path(checkpoint_directory) / f"epoch_{epoch:04d}.npz"
             save_checkpoint(checkpoint_path, model, history, config)
             print(f"Checkpoint saved to: {checkpoint_path.resolve()}")
+
+        if epoch % config["decay_frequency"] == 0:
+            learning_rate *= config["decay_rate"]
 
     return model, history
 
