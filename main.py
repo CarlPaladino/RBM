@@ -182,8 +182,8 @@ class RBM:
     def train_batch(self, V_data, learning_rate, cd_steps):
         batch_size = V_data.shape[0]
 
-        # positive phase: calculate hidden probabilities for real data
-        hidden_probabilities_data = self.hidden_probabilities(V_data)
+        # positive phase: sample binary hidden states for real data
+        hidden_states_data = self.sample_hidden(V_data)
 
         # negative phase: initialize persistent chain
         if self.gibbs_chain is None:
@@ -198,9 +198,9 @@ class RBM:
         loss = data_free_energy - model_free_energy
 
         # calculate average visible to hidden associations
-        gradient_weights = (model_visible_states.T @ model_hidden_probabilities) / len(model_visible_states) - (V_data.T @ hidden_probabilities_data) / batch_size
+        gradient_weights = (model_visible_states.T @ model_hidden_probabilities) / len(model_visible_states) - (V_data.T @ hidden_states_data) / batch_size
         gradient_visible_bias = np.mean(model_visible_states, axis=0) - np.mean(V_data, axis=0)
-        gradient_hidden_bias = np.mean(model_hidden_probabilities, axis=0) - np.mean(hidden_probabilities_data, axis=0)
+        gradient_hidden_bias = np.mean(model_hidden_probabilities, axis=0) - np.mean(hidden_states_data, axis=0)
 
         # update parameters using gradients
         self.weights -= learning_rate * gradient_weights
