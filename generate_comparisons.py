@@ -8,7 +8,7 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from main import RBM, sample_bernoulli
+from main import CONFIG, RBM
 
 parser = argparse.ArgumentParser(description="Compare class-conditioned Gibbs chains at different step counts")
 parser.add_argument("checkpoint", type=Path)
@@ -18,18 +18,14 @@ args = parser.parse_args()
 folder = args.output
 model = RBM.load(args.checkpoint)
 with np.load(args.checkpoint, allow_pickle=False) as saved:
-    config = json.loads(str(saved["config"]))
-    rng = model.rng
-    rng.bit_generator.state = json.loads(str(saved["rng_state"]))
+    config = json.loads(str(saved["config"])) if "config" in saved else CONFIG
 folder.mkdir(parents=True, exist_ok=True)
-samples = sample_bernoulli(np.full((config["number_generated_samples"], model.visible_units), 0.5, dtype=np.float32), rng)
+samples = model.initial_generation_states(config["number_generated_samples"])
 fixed_labels = None
 if args.class_name is not None:
     fixed_labels = np.zeros((len(samples), len(model.class_names)), dtype=np.float32)
     fixed_labels[:, model.class_names.index(args.class_name)] = 1
     samples[:, : model.label_units] = fixed_labels
-else:
-    samples[:, : model.label_units] = np.eye(model.label_units, dtype=np.float32)[rng.integers(model.label_units, size=len(samples))]
 description = f"Digit {args.class_name}" if args.class_name is not None else "Unconditional"
 snapshots = {}
 previous = 0

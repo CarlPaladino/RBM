@@ -214,31 +214,36 @@ class RBM:
         hidden_probabilities = self.hidden_probabilities(V)
         return self.visible_probabilities(hidden_probabilities)
 
-    # generate new samples by running a Gibbs chain starting from random initial visible states and optional clamped labels
+    # sample_bernoulli derived initial generation states for Gibbs sampling accounting for resuming from previous Gibbs chain
+    def initial_generation_states(self, number_samples):
+        if self.gibbs_chain is not None:
+            indices = self.rng.choice(len(self.gibbs_chain), size=number_samples, replace=number_samples > len(self.gibbs_chain))
+            return self.gibbs_chain[indices].copy()
+
+        # initialize the visible units with random probabilities
+        initial_probabilities = np.full((number_samples, self.visible_units), 0.5, dtype=np.float32)
+        initial_visible = sample_bernoulli(initial_probabilities, self.rng)
+        initial_class_indices = self.rng.integers(self.label_units, size=number_samples)
+        initial_visible[:, 0 : self.label_units] = np.eye(self.label_units, dtype=np.float32)[initial_class_indices]
+        return initial_visible
+
     def generate(self, number_samples, steps, class_name=None):
         fixed_labels = None
 
         # if class_name is specified, prepare fixed labels for clamping during Gibbs sampling
         if class_name is not None:
-            if class_name not in self.class_names:
-                raise ValueError(f"Choose class_name from {self.class_names}")
-
             fixed_labels = np.zeros((number_samples, self.label_units), dtype=np.float32)
             fixed_labels[:, self.class_names.index(class_name)] = 1
 
-        # initialize the visible units with random probabilities
-        initial_probabilities = np.full((number_samples, self.visible_units), 0.5, dtype=np.float32)
-        initial_visible = sample_bernoulli(initial_probabilities, self.rng)
-
-        initial_class_indices = self.rng.integers(self.label_units, size=number_samples)
-        initial_visible[:, 0 : self.label_units] = np.eye(self.label_units, dtype=np.float32)[initial_class_indices]
+        initial_visible = self.initial_generation_states(number_samples)
         visible_states = self.run_gibbs_chain(initial_visible, steps - 1, fixed_labels=fixed_labels)
 
         return self.visible_probabilities(self.sample_hidden(visible_states))[:, self.label_units :]
 
-    # save model parameters to a compressed .npz file
+    # Save parameters, persistent particles, and random generator state.
     def save(self, path):
-        np.savez_compressed(path, weights=self.weights, visible_bias=self.visible_bias, hidden_bias=self.hidden_bias, visible_units=self.visible_units, hidden_units=self.hidden_units, class_names=np.array(self.class_names, dtype=str))
+        chain_state = {} if self.gibbs_chain is None else {"gibbs_chain": self.gibbs_chain}
+        np.savez_compressed(path, weights=self.weights, visible_bias=self.visible_bias, hidden_bias=self.hidden_bias, visible_units=self.visible_units, hidden_units=self.hidden_units, class_names=np.array(self.class_names, dtype=str), rng_state=json.dumps(self.rng.bit_generator.state), **chain_state)
 
     @classmethod
     def load(cls, path, seed=42):
@@ -248,6 +253,10 @@ class RBM:
             model.weights = saved["weights"].copy()
             model.visible_bias = saved["visible_bias"].copy()
             model.hidden_bias = saved["hidden_bias"].copy()
+            if "gibbs_chain" in saved:
+                model.gibbs_chain = saved["gibbs_chain"].copy()
+            if "rng_state" in saved:
+                model.rng.bit_generator.state = json.loads(str(saved["rng_state"]))
         return model
 
 
@@ -275,9 +284,10 @@ def save_checkpoint(path, model, history, config):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_suffix(".tmp")
     serializable_history = [{key: value.tolist() if isinstance(value, np.ndarray) else value for key, value in record.items()} for record in history]
+    chain_state = {} if model.gibbs_chain is None else {"gibbs_chain": model.gibbs_chain}
 
     with temporary_path.open("wb") as file:
-        np.savez_compressed(file, weights=model.weights, visible_bias=model.visible_bias, hidden_bias=model.hidden_bias, class_names=np.array(model.class_names, dtype=str), rng_state=json.dumps(model.rng.bit_generator.state), history=json.dumps(serializable_history), config=json.dumps(config), epoch=history[-1]["epoch"])
+        np.savez_compressed(file, weights=model.weights, visible_bias=model.visible_bias, hidden_bias=model.hidden_bias, class_names=np.array(model.class_names, dtype=str), rng_state=json.dumps(model.rng.bit_generator.state), history=json.dumps(serializable_history), config=json.dumps(config), epoch=history[-1]["epoch"], **chain_state)
         file.flush()
         os.fsync(file.fileno())
     temporary_path.replace(path)
@@ -285,6 +295,9 @@ def save_checkpoint(path, model, history, config):
 
 # entire training loop for the RBM
 def train(training_data, hidden_size, seed, config, checkpoint_directory=None, resume_from=None):
+    # Older configurations without decay settings retain a constant learning rate.
+    decay_rate = config.get("decay_rate", 1.0)
+    decay_frequency = config.get("decay_frequency", 10)
     rng = np.random.default_rng(seed)
     model = RBM(visible_units=training_data.shape[1], hidden_units=hidden_size, rng=rng, weight_scale=config["weight_initialization_scale"], class_names=config["class_names"])
     history = []
@@ -298,6 +311,8 @@ def train(training_data, hidden_size, seed, config, checkpoint_directory=None, r
             model.weights = checkpoint["weights"].copy()
             model.visible_bias = checkpoint["visible_bias"].copy()
             model.hidden_bias = checkpoint["hidden_bias"].copy()
+            if "gibbs_chain" in checkpoint:
+                model.gibbs_chain = checkpoint["gibbs_chain"].copy()
             rng.bit_generator.state = json.loads(str(checkpoint["rng_state"]))
             history = json.loads(str(checkpoint["history"]))
             start_epoch = int(checkpoint["epoch"]) + 1
@@ -305,9 +320,9 @@ def train(training_data, hidden_size, seed, config, checkpoint_directory=None, r
     if checkpoint_directory is None:
         checkpoint_directory = Path(config["output_directory"]) / f"hidden_{hidden_size}" / "checkpoints"
 
-    learning_rate = config["learning_rate"]
-
     for epoch in range(start_epoch, config["number_epochs"] + 1):
+        # compute learning rate for this epoch
+        learning_rate = config["learning_rate"] * decay_rate ** ((epoch - 1) // decay_frequency)
         weighted_loss_sum = 0.0
         observations_seen = 0
         next_progress = 10
@@ -324,16 +339,13 @@ def train(training_data, hidden_size, seed, config, checkpoint_directory=None, r
         print(" | Evaluating reconstruction MSE...", flush=True)
         training_metrics = evaluate(model, training_data, config["batch_size"])
 
-        history.append({"epoch": epoch, "cd_loss": average_cd_loss, "training_reconstruction_mse": training_metrics["reconstruction_mse"], "training_hidden_activation": training_metrics["mean_hidden_activation"]})
+        history.append({"epoch": epoch, "learning_rate": learning_rate, "cd_loss": average_cd_loss, "training_reconstruction_mse": training_metrics["reconstruction_mse"], "training_hidden_activation": training_metrics["mean_hidden_activation"]})
 
-        print(f"Epoch {epoch}/{config['number_epochs']} | CD loss: {average_cd_loss:.6f} | Train MSE: {training_metrics['reconstruction_mse']:.6f}")
+        print(f"Epoch {epoch}/{config['number_epochs']} | Learning rate: {learning_rate:.6g} | CD loss: {average_cd_loss:.6f} | Train MSE: {training_metrics['reconstruction_mse']:.6f}")
         if epoch % 10 == 0 or epoch == config["number_epochs"]:
             checkpoint_path = Path(checkpoint_directory) / f"epoch_{epoch:04d}.npz"
             save_checkpoint(checkpoint_path, model, history, config)
             print(f"Checkpoint saved to: {checkpoint_path.resolve()}")
-
-        if epoch % config["decay_frequency"] == 0:
-            learning_rate *= config["decay_rate"]
 
     return model, history
 
