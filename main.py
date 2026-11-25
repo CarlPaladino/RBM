@@ -96,6 +96,7 @@ class RBM:
         self.visible_bias = np.zeros(visible_units, dtype=np.float32)
         self.hidden_bias = np.zeros(hidden_units, dtype=np.float32)
         self.weights = rng.normal(scale=weight_scale, size=(visible_units, hidden_units)).astype(np.float32)
+        self.gibbs_chain = None
 
     # conditional probabilities P(h | v)
     # V - shape (B, visible units size) where B is batch size
