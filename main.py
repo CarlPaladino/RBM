@@ -7,7 +7,7 @@ from tempfile import mkdtemp
 import matplotlib.pyplot as plt
 import numpy as np
 
-CONFIG = {"learning_rate": 0.02, "decay_rate": 0.9, "decay_frequency": 10, "batch_size": 100, "number_epochs": 300, "cd_steps": 10, "weight_initialization_scale": 0.01, "random_seed": 42, "generation_steps": 5000, "number_generated_samples": 16, "hidden_sizes": [512], "output_directory": "output", "class_names": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]}
+CONFIG = {"learning_rate": 0.02, "decay_rate": 0.9, "decay_frequency": 10, "batch_size": 100, "samples_per_epoch": 10000, "number_epochs": 300, "cd_steps": 10, "weight_initialization_scale": 0.01, "random_seed": 42, "generation_steps": 5000, "number_generated_samples": 16, "hidden_sizes": [512], "output_directory": "output", "class_names": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]}
 
 # 784 pixel units (28x28 images), plus 10 one-hot label units.
 # 1 bias per visible unit, and hidden unit respectively
@@ -56,9 +56,9 @@ def sample_bernoulli(probabilities, rng):
 
 
 # separate training data into minibatches
-def iterate_minibatches(data, batch_size, rng):
-    amount_samples = len(data)
-    indices = rng.permutation(amount_samples)
+def iterate_minibatches(data, batch_size, rng, max_samples=None):
+    indices = rng.permutation(len(data))[:max_samples]
+    amount_samples = len(indices)
 
     for start_index in range(0, amount_samples, batch_size):
         end_index = start_index + batch_size
@@ -287,6 +287,8 @@ def save_checkpoint(path, model, history, config):
 def train(training_data, hidden_size, seed, config, checkpoint_directory=None, resume_from=None):
     decay_rate = config["decay_rate"]
     decay_frequency = config["decay_frequency"]
+    samples_per_epoch = config["samples_per_epoch"]
+    epoch_size = min(samples_per_epoch, len(training_data))
     rng = np.random.default_rng(seed)
     model = RBM(visible_units=training_data.shape[1], hidden_units=hidden_size, rng=rng, weight_scale=config["weight_initialization_scale"], class_names=config["class_names"])
     history = []
@@ -311,12 +313,12 @@ def train(training_data, hidden_size, seed, config, checkpoint_directory=None, r
         observations_seen = 0
         next_progress = 10
 
-        for batch in iterate_minibatches(training_data, config["batch_size"], rng):
+        for batch in iterate_minibatches(training_data, config["batch_size"], rng, max_samples=epoch_size):
             metrics = model.train_batch(batch, learning_rate, config["cd_steps"])
             weighted_loss_sum += metrics["loss"] * metrics["batch_size"]
             observations_seen += metrics["batch_size"]
-            while next_progress <= 100 and observations_seen * 100 >= next_progress * len(training_data):
-                print(f"\rEpoch {epoch}/{config['number_epochs']} | Training {next_progress}% | {observations_seen}/{len(training_data)} samples", end="", flush=True)
+            while next_progress <= 100 and observations_seen * 100 >= next_progress * epoch_size:
+                print(f"\rEpoch {epoch}/{config['number_epochs']} | Training {next_progress}% | {observations_seen}/{epoch_size} samples", end="", flush=True)
                 next_progress += 10
 
         average_cd_loss = weighted_loss_sum / observations_seen
