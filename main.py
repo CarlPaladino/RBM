@@ -214,6 +214,15 @@ class RBM:
         hidden_probabilities = self.hidden_probabilities(V)
         return self.visible_probabilities(hidden_probabilities)
 
+    # Return the noisy input and its one-pass reconstruction probabilities.
+    def reconstruct_noisy(self, V, noise_level=0.1, rng=None):
+        rng = self.rng if rng is None else rng
+        noisy_visible = V.copy()
+        noisy_pixels = noisy_visible[:, self.label_units :]
+        flipped_pixels = rng.random(noisy_pixels.shape) < noise_level
+        noisy_pixels[flipped_pixels] = 1.0 - noisy_pixels[flipped_pixels]
+        return noisy_visible, self.reconstruct(noisy_visible)
+
     # copy the latest training particles to start generation.
     def initial_generation_states(self, number_samples):
         indices = self.rng.choice(len(self.gibbs_chain), size=number_samples, replace=number_samples > len(self.gibbs_chain))
@@ -375,6 +384,7 @@ if __name__ == "__main__":
     parser.add_argument("--resume", type=Path, help="Resume training from an epoch checkpoint")
     parser.add_argument("--class-name", choices=[str(i) for i in range(10)], default=None, help="Digit to generate; omit to sample freely across classes")
     parser.add_argument("--reconstruct-from", type=Path, help="Reconstruct test images without training using parameters.npz or a checkpoint")
+    parser.add_argument("--noise-level", type=float, default=None, help="With --reconstruct-from, flip each input pixel with this probability (0 to 1) and compare clean and noisy reconstructions")
     parser.add_argument("--generate-from", type=Path, help="Generate without training using parameters.npz or a checkpoint")
     parser.add_argument("--steps", type=int, default=CONFIG["generation_steps"])
     parser.add_argument("--samples", type=int, default=CONFIG["number_generated_samples"])
@@ -386,6 +396,11 @@ if __name__ == "__main__":
         parser.error("Choose only one of --generate-from, --reconstruct-from, and --resume")
     if args.samples < 1:
         parser.error("--samples must be at least 1")
+    if args.noise_level is not None:
+        if args.reconstruct_from is None:
+            parser.error("--noise-level requires --reconstruct-from")
+        if not 0 <= args.noise_level <= 1:
+            parser.error("--noise-level must be between 0 and 1")
     if args.generate_from and args.steps < 1:
         parser.error("--steps must be at least 1")
     if args.generate_from:
@@ -415,7 +430,8 @@ if __name__ == "__main__":
             parser.error("Reconstruction CSV must contain at least one test example")
         if data.shape[1] != model.pixel_units + 1:
             parser.error("Reconstruction CSV must contain a label followed by 784 pixels per row")
-        indices = np.random.default_rng().choice(len(data), size=min(args.samples, len(data)), replace=False)
+        reconstruction_rng = np.random.default_rng()
+        indices = reconstruction_rng.choice(len(data), size=min(args.samples, len(data)), replace=False)
         data = data[indices]
         labels = [str(int(label)) for label in data[:, 0]]
         if any(label not in model.class_names for label in labels):
@@ -425,17 +441,28 @@ if __name__ == "__main__":
         originals = (data[:, 1:] / 255.0 >= 0.5).astype(np.float32)
         visible = np.concatenate((original_labels, originals), axis=1)
         reconstructions = model.reconstruct(visible)[:, model.label_units :]
+        if args.noise_level is None:
+            display_rows = [("Original", originals), ("Reconstruction", reconstructions)]
+            output_name = "reconstructions.png"
+        else:
+            noisy_visible, reconstructed_visible = model.reconstruct_noisy(visible, args.noise_level, rng=reconstruction_rng)
+            display_rows = [
+                ("Original", originals),
+                ("Clean reconstruction", reconstructions),
+                (f"Noisy ({args.noise_level:.0%} flips)", noisy_visible[:, model.label_units :]),
+                ("Noisy reconstruction", reconstructed_visible[:, model.label_units :]),
+            ]
+            output_name = "noisy_reconstructions.png"
         args.output.mkdir(parents=True, exist_ok=True)
-        figure, axes = plt.subplots(2, len(originals), figsize=(2 * len(originals), 4), squeeze=False)
-        for index, (original, reconstruction) in enumerate(zip(originals, reconstructions)):
-            axes[0, index].imshow(original.reshape(28, 28).T, cmap="gray", vmin=0, vmax=1)
-            axes[1, index].imshow(reconstruction.reshape(28, 28).T, cmap="gray", vmin=0, vmax=1)
-            axes[0, index].set_title(f"Original {labels[index]}")
-            axes[1, index].set_title("Reconstruction")
+        figure, axes = plt.subplots(len(display_rows), len(originals), figsize=(2 * len(originals), 2 * len(display_rows)), squeeze=False)
+        for row_index, (title, images) in enumerate(display_rows):
+            for index, image in enumerate(images):
+                axes[row_index, index].imshow(image.reshape(28, 28).T, cmap="gray", vmin=0, vmax=1)
+                axes[row_index, index].set_title(f"Original {labels[index]}" if row_index == 0 else title)
         for axis in axes.flat:
             axis.axis("off")
         figure.tight_layout()
-        figure.savefig(args.output / "reconstructions.png", dpi=150)
+        figure.savefig(args.output / output_name, dpi=150)
         plt.close(figure)
         print(f"Reconstructions saved to {args.output.resolve()}")
     else:
